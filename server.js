@@ -105,7 +105,7 @@ function setupPipeline(twilioWs) {
     sample_rate: 8000,
     channels: 1,
     language: 'en-US',
-    model: 'nova-2',
+    model: 'aura-2-odysseus-en',
     interim_results: true,
     smart_format: true,
     filler_words: false,
