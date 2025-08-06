@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Twilio + Deepgram Voice Agent Integration
-Optimized for performance and efficiency
+Following the proven WebSocket-based approach
 """
 
 import asyncio
@@ -217,7 +217,8 @@ def health_check():
                 'health': '/ (GET)',
                 'voice': '/voice (POST)', 
                 'media': '/media (POST)',
-                'metrics': '/metrics (GET)'
+                'metrics': '/metrics (GET)',
+                'websocket': 'wss://twilio-deepgram-openai-voice.onrender.com/twilio'
             },
             'connections': conn_info,
             'environment': env_status,
@@ -250,7 +251,7 @@ def metrics():
 
 @app.route('/voice', methods=['GET', 'POST'])
 def voice_webhook():
-    """Twilio voice webhook - returns TwiML to start Media Stream"""
+    """Twilio voice webhook - returns TwiML to start WebSocket connection"""
     # Rate limiting
     client_ip = request.remote_addr
     if not rate_limiter.is_allowed(client_ip):
@@ -274,23 +275,22 @@ def voice_webhook():
     try:
         response = VoiceResponse()
         
-        # Use Connect for bidirectional streaming
+        # Use Connect for WebSocket streaming (following video approach)
         connect = response.connect()
         
-        # Get the host and ensure HTTPS for production
+        # Get the host from request headers and ensure HTTPS
         host = request.headers.get('Host', 'localhost:5000')
         
         # Check if we're in production (Render) and force HTTPS
         if 'onrender.com' in host or 'localhost' not in host:
-            media_url = f'https://{host}/media'
+            websocket_url = f'wss://{host}/twilio'
         else:
-            media_url = f'http://{host}/media'
+            websocket_url = f'ws://{host}/twilio'
             
-        logger.info(f"📡 Media Stream URL: {media_url}")
-        logger.info(f"📡 Request headers: {dict(request.headers)}")
+        logger.info(f"🔌 WebSocket URL: {websocket_url}")
         
         connect.stream(
-            url=media_url,
+            url=websocket_url,
             track='inbound_track',
             name='voice_agent_stream'
         )
@@ -306,121 +306,99 @@ def voice_webhook():
         response.say("Sorry, there was an error. Please try again.")
         return Response(str(response), mimetype='text/xml')
 
-@app.route('/media', methods=['GET', 'POST'])
-def media_webhook():
-    """Handle Media Stream events from Twilio"""
-    logger.info(f"📡 Media webhook called with method: {request.method}")
-    logger.info(f"📡 Media webhook called with headers: {dict(request.headers)}")
-    logger.info(f"📡 Media webhook called with form data: {request.form.to_dict()}")
+async def handle_twilio_connection(websocket, path):
+    """Handle WebSocket connection from Twilio (following video approach)"""
+    if path != '/twilio':
+        logger.warning(f"Unknown path: {path}")
+        return
+        
+    logger.info("🔌 New Twilio WebSocket connection")
+    connection_id = f"conn_{int(time.time() * 1000)}"
     
-    # Handle GET requests for testing
-    if request.method == 'GET':
-        logger.info("📡 GET request to /media - Media Stream endpoint is reachable")
-        return {'status': 'Media Stream endpoint is working'}, 200
+    # Queues for communication between tasks
+    audio_queue = asyncio.Queue()
+    stream_sid_queue = asyncio.Queue()
     
-    # Try to get JSON data
-    data = None
     try:
-        data = request.get_json()
-        logger.info(f"📡 Media webhook JSON data: {data}")
+        # Connect to Deepgram Voice Agent
+        async with create_deepgram_connection() as deepgram_ws:
+            logger.info("🎙️ Connected to Deepgram Voice Agent")
+            
+            # Store connection for cleanup
+            connection_manager.add_connection(connection_id, {
+                'twilio_ws': websocket,
+                'deepgram_ws': deepgram_ws,
+                'stream_sid': None,
+                'audio_buffer': bytearray()
+            })
+            
+            # Send Voice Agent configuration
+            config_message = get_deepgram_config()
+            await deepgram_ws.send(json.dumps(config_message))
+            logger.info("📋 Configuration sent to Deepgram Voice Agent")
+            
+            # Start tasks for handling messages (following video pattern)
+            tasks = [
+                asyncio.create_task(handle_twilio_messages(websocket, deepgram_ws, connection_id)),
+                asyncio.create_task(handle_deepgram_messages(deepgram_ws, websocket, connection_id)),
+                asyncio.create_task(send_keep_alive(deepgram_ws))
+            ]
+            
+            # Wait for any task to complete (usually means connection closed)
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            
+            # Cancel remaining tasks
+            for task in pending:
+                task.cancel()
+                
     except Exception as e:
-        logger.info(f"📡 No JSON data in request: {e}")
-    
-    # Also check form data for Media Stream events
-    if not data and request.form:
-        data = request.form.to_dict()
-        logger.info(f"📡 Using form data as Media Stream data: {data}")
-    
-    if not data:
-        logger.info("📡 No data received in Media Stream webhook")
-        return '', 200
-    
-    event = data.get('event')
-    stream_sid = data.get('streamSid')
-    
-    logger.info(f"🔄 Media event: {event} for stream {stream_sid}")
-    
-    if event == 'start':
-        logger.info(f"🚀 Starting Deepgram connection for stream {stream_sid}")
-        # Start new connection to Deepgram in background
-        threading.Thread(target=lambda: asyncio.run(start_deepgram_connection(stream_sid)), daemon=True).start()
-    elif event == 'media':
-        # Handle incoming audio data
-        media_data = data.get('media', {})
-        if media_data.get('track') == 'inbound':
-            # Send audio to Deepgram
-            audio_payload = media_data.get('payload')
-            if audio_payload:
-                try:
-                    audio_bytes = base64.b64decode(audio_payload)
-                    send_audio_to_deepgram(stream_sid, audio_bytes)
-                    logger.debug(f"🎵 Received audio chunk for stream {stream_sid}")
-                except Exception as e:
-                    logger.error(f"❌ Error processing audio: {e}")
-    elif event == 'stop':
-        # Clean up connection
-        connection_manager.remove_connection(stream_sid)
-        logger.info(f"🧹 Cleaned up stream {stream_sid}")
-    else:
-        logger.info(f"📡 Unknown Media Stream event: {event}")
-    
-    return '', 200
+        logger.error(f"❌ Error in Twilio connection handler: {e}")
+    finally:
+        # Cleanup
+        connection_manager.remove_connection(connection_id)
+        logger.info(f"🧹 Cleaned up connection {connection_id}")
 
-async def start_deepgram_connection(stream_sid):
-    """Start Deepgram connection for a new stream with retry logic"""
-    max_retries = 3
-    retry_count = 0
+async def handle_twilio_messages(twilio_ws, deepgram_ws, connection_id):
+    """Handle messages from Twilio (following video approach)"""
+    BUFFER_SIZE = 20 * 160  # 20 Twilio messages = 0.4 seconds of audio
+    audio_buffer = bytearray()
     
-    while retry_count < max_retries:
-        try:
-            async with create_deepgram_connection() as deepgram_ws:
-                logger.info(f"🎙️ Connected to Deepgram Voice Agent for stream {stream_sid}")
-                
-                # Store connection
-                connection_manager.add_connection(stream_sid, {
-                    'deepgram_ws': deepgram_ws,
-                    'stream_sid': stream_sid,
-                    'audio_buffer': bytearray(),
-                    'connected_at': time.time()
-                })
-                
-                # Send Voice Agent configuration
-                config_message = get_deepgram_config()
-                await deepgram_ws.send(json.dumps(config_message))
-                logger.info("📋 Configuration sent to Deepgram Voice Agent")
-                
-                # Start tasks for handling messages
-                tasks = [
-                    asyncio.create_task(handle_deepgram_messages(deepgram_ws, stream_sid)),
-                    asyncio.create_task(send_keep_alive(deepgram_ws))
-                ]
-                
-                # Wait for any task to complete
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                
-                # Cancel remaining tasks
-                for task in pending:
-                    task.cancel()
+    try:
+        async for message in twilio_ws:
+            data = json.loads(message)
+            
+            if data["event"] == "start":
+                logger.info("🚀 Media stream started")
+                stream_sid = data["start"]["streamSid"]
+                conn = connection_manager.get_connection(connection_id)
+                if conn:
+                    conn['stream_sid'] = stream_sid
                     
-                # If we get here, connection was successful
+            elif data["event"] == "connected":
+                logger.info("🔗 Twilio connected")
+                continue
+                
+            elif data["event"] == "media":
+                media = data["media"]
+                if media["track"] == "inbound":
+                    # Decode audio from Twilio
+                    chunk = base64.b64decode(media["payload"])
+                    audio_buffer.extend(chunk)
+                    
+                    # Send buffered audio to Deepgram when buffer is ready
+                    while len(audio_buffer) >= BUFFER_SIZE:
+                        audio_chunk = audio_buffer[:BUFFER_SIZE]
+                        await deepgram_ws.send(audio_chunk)
+                        audio_buffer = audio_buffer[BUFFER_SIZE:]
+                        
+            elif data["event"] == "stop":
+                logger.info("🛑 Media stream stopped")
                 break
                 
-        except Exception as e:
-            retry_count += 1
-            logger.error(f"❌ Error in Deepgram connection (attempt {retry_count}/{max_retries}): {e}")
-            
-            if retry_count < max_retries:
-                wait_time = 2 ** retry_count  # Exponential backoff
-                logger.info(f"🔄 Retrying in {wait_time} seconds...")
-                await asyncio.sleep(wait_time)
-            else:
-                logger.error(f"❌ Failed to connect to Deepgram after {max_retries} attempts")
-                
-        # Cleanup
-        connection_manager.remove_connection(stream_sid)
-        logger.info(f"🧹 Cleaned up stream {stream_sid}")
+    except Exception as e:
+        logger.error(f"❌ Error handling Twilio messages: {e}")
 
-async def handle_deepgram_messages(deepgram_ws, stream_sid):
+async def handle_deepgram_messages(deepgram_ws, twilio_ws, connection_id):
     """Handle messages from Deepgram Voice Agent"""
     try:
         async for message in deepgram_ws:
@@ -431,80 +409,30 @@ async def handle_deepgram_messages(deepgram_ws, stream_sid):
                 
                 # Handle user started speaking (barge-in)
                 if data.get('type') == 'UserStartedSpeaking':
-                    # Send clear message to Twilio
-                    send_clear_to_twilio(stream_sid)
-                    logger.info("🔄 Sent barge-in clear message to Twilio")
+                    conn = connection_manager.get_connection(connection_id)
+                    if conn and conn['stream_sid']:
+                        clear_message = {
+                            "event": "clear",
+                            "streamSid": conn['stream_sid']
+                        }
+                        await twilio_ws.send(json.dumps(clear_message))
+                        logger.info("🔄 Sent barge-in clear message to Twilio")
                         
             else:
                 # Binary audio data from Deepgram to send to Twilio
-                send_audio_to_twilio(stream_sid, message)
+                conn = connection_manager.get_connection(connection_id)
+                if conn and conn['stream_sid']:
+                    media_message = {
+                        "event": "media",
+                        "streamSid": conn['stream_sid'],
+                        "media": {
+                            "payload": base64.b64encode(message).decode("ascii")
+                        }
+                    }
+                    await twilio_ws.send(json.dumps(media_message))
                     
     except Exception as e:
         logger.error(f"❌ Error handling Deepgram messages: {e}")
-
-def send_audio_to_twilio(stream_sid, audio_data):
-    """Send audio data to Twilio via Media Streams API"""
-    try:
-        # Encode audio data
-        encoded_audio = base64.b64encode(audio_data).decode('ascii')
-        
-        # Prepare media message for Twilio
-        media_message = {
-            "event": "media",
-            "streamSid": stream_sid,
-            "media": {
-                "payload": encoded_audio,
-                "track": "outbound_track",
-                "chunk": 1,
-                "timestamp": int(time.time() * 1000)
-            }
-        }
-        
-        # Store for Twilio to pick up (in a real implementation, you'd send this via WebSocket)
-        logger.info(f"🎵 Audio data ready for Twilio (stream: {stream_sid}, size: {len(audio_data)} bytes)")
-        
-        # In a production setup, you'd send this via Twilio's Media Streams WebSocket
-        # For now, we log it for debugging
-        return media_message
-        
-    except Exception as e:
-        logger.error(f"❌ Error sending audio to Twilio: {e}")
-        return None
-
-def send_audio_to_deepgram(stream_sid, audio_bytes):
-    """Send audio data to Deepgram"""
-    try:
-        conn = connection_manager.get_connection(stream_sid)
-        if conn:
-            # Add to buffer
-            conn['audio_buffer'].extend(audio_bytes)
-            
-            # Send when buffer is ready (20ms chunks)
-            while len(conn['audio_buffer']) >= AUDIO_BUFFER_SIZE:
-                chunk = conn['audio_buffer'][:AUDIO_BUFFER_SIZE]
-                asyncio.run_coroutine_threadsafe(
-                    conn['deepgram_ws'].send(chunk),
-                    asyncio.get_event_loop()
-                )
-                conn['audio_buffer'] = conn['audio_buffer'][AUDIO_BUFFER_SIZE:]
-                
-                logger.debug(f"🎵 Sent audio chunk to Deepgram (stream: {stream_sid})")
-    except Exception as e:
-        logger.error(f"❌ Error sending audio to Deepgram: {e}")
-
-def send_clear_to_twilio(stream_sid):
-    """Send clear message to Twilio"""
-    try:
-        clear_message = {
-            "event": "clear",
-            "streamSid": stream_sid
-        }
-        
-        # Send to Twilio Media Streams API
-        logger.info(f"🔄 Clear message ready for Twilio (stream: {stream_sid})")
-        
-    except Exception as e:
-        logger.error(f"❌ Error sending clear to Twilio: {e}")
 
 async def send_keep_alive(deepgram_ws):
     """Send keep-alive messages to maintain Deepgram connection"""
@@ -516,6 +444,28 @@ async def send_keep_alive(deepgram_ws):
             logger.debug("💓 Keep alive sent")
     except Exception as e:
         logger.error(f"❌ Error in keep-alive: {e}")
+
+def start_websocket_server():
+    """Start the WebSocket server for Twilio connections"""
+    port = int(os.getenv('PORT', 5000))
+    
+    # Create WebSocket server
+    import websockets
+    start_server = websockets.serve(
+        handle_twilio_connection,
+        "0.0.0.0",
+        port,
+        ping_interval=None,
+        ping_timeout=None
+    )
+    
+    logger.info(f"🔌 WebSocket server starting on port {port}")
+    
+    # Run the server
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_server)
+    loop.run_forever()
 
 def start_cleanup_task():
     """Start background cleanup task"""
@@ -555,10 +505,14 @@ if __name__ == '__main__':
     
     port = int(os.getenv('PORT', 5000))
     
+    # Start WebSocket server in a separate thread
+    websocket_thread = threading.Thread(target=start_websocket_server, daemon=True)
+    websocket_thread.start()
+    
     # Start Flask app for HTTP endpoints
     logger.info(f"🚀 Flask server starting on port {port}")
     logger.info(f"📞 Twilio webhook URL: https://twilio-deepgram-openai-voice.onrender.com/voice")
-    logger.info(f"📡 Media stream URL: https://twilio-deepgram-openai-voice.onrender.com/media")
+    logger.info(f"🔌 WebSocket URL: wss://twilio-deepgram-openai-voice.onrender.com/twilio")
     logger.info(f"📊 Metrics URL: https://twilio-deepgram-openai-voice.onrender.com/metrics")
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
