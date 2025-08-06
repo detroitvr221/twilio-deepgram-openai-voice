@@ -28,6 +28,22 @@ const twilioClient = twilio(
 // Store active connections for cleanup
 const activeConnections = new Map();
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Voice AI Server is running!',
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/health',
+      voice: '/voice (POST)',
+      streamStatus: '/stream-status (POST)',
+      twilioStream: '/twilio-stream (WebSocket)'
+    },
+    activeConnections: activeConnections.size
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
