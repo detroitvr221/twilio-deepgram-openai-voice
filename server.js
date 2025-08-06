@@ -69,7 +69,7 @@ app.post('/voice', async (req, res) => {
   // Initial greeting with Deepgram TTS
   try {
     const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
-    const audioResponse = await deepgram.speak({
+    const audioResponse = await deepgram.speak.request({
       text: 'Hello! I\'m your AI assistant. I can help you send text messages, look up business hours, or create reminders. Just speak clearly and I\'ll respond. What would you like me to do?',
       model: 'aura-2-odysseus-en',
       voice: 'nova',
@@ -455,9 +455,13 @@ async function sendTwiMLResponse(message, callSid) {
   }
 
   try {
+    console.log('🎙️  Attempting Deepgram TTS for message:', message);
+    
     // Use Deepgram TTS to generate speech
     const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
-    const audioResponse = await deepgram.speak({
+    console.log('🔑 Deepgram API Key length:', process.env.DEEPGRAM_API_KEY?.length || 0);
+    
+    const audioResponse = await deepgram.speak.request({
       text: message,
       model: 'aura-2-odysseus-en',
       voice: 'nova',
@@ -465,9 +469,12 @@ async function sendTwiMLResponse(message, callSid) {
       sample_rate: 8000,
     });
 
+    console.log('✅ Deepgram TTS successful, audio length:', audioResponse.audio?.length || 0);
+
     // Convert audio to base64 for Twilio
     const audioBuffer = Buffer.from(audioResponse.audio);
     const base64Audio = audioBuffer.toString('base64');
+    console.log('📊 Base64 audio length:', base64Audio.length);
 
     // Create TwiML with Deepgram audio
     const twiml = new twilio.twiml.VoiceResponse();
@@ -480,12 +487,14 @@ async function sendTwiMLResponse(message, callSid) {
       twiml: twiml.toString(),
     });
 
-    console.log('🗣️  Deepgram TTS response sent:', message);
+    console.log('🗣️  Deepgram TTS response sent successfully:', message);
   } catch (error) {
-    console.error('❌ Failed to send Deepgram TTS response:', error);
+    console.error('❌ Deepgram TTS failed with error:', error.message);
+    console.error('❌ Error details:', error);
     
     // Fallback to Twilio voice if Deepgram fails
     try {
+      console.log('🔄 Falling back to Twilio voice...');
       const twiml = new twilio.twiml.VoiceResponse();
       twiml.say({
         voice: 'alice',
