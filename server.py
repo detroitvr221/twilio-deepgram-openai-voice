@@ -280,13 +280,19 @@ def voice_webhook():
         # Get the host from request headers
         host = request.headers.get('Host', 'localhost:5000')
         
+        # Add debugging for Media Stream URL
+        media_url = f'https://{host}/media'
+        logger.info(f"📡 Media Stream URL: {media_url}")
+        
         connect.stream(
-            url=f'https://{host}/media',
+            url=media_url,
             track='inbound_track',
             name='voice_agent_stream'
         )
         
-        return Response(str(response), mimetype='text/xml')
+        twiml_response = str(response)
+        logger.info(f"📞 Generated TwiML: {twiml_response}")
+        return Response(twiml_response, mimetype='text/xml')
         
     except Exception as e:
         logger.error(f"❌ Error in voice webhook: {e}")
@@ -295,11 +301,17 @@ def voice_webhook():
         response.say("Sorry, there was an error. Please try again.")
         return Response(str(response), mimetype='text/xml')
 
-@app.route('/media', methods=['POST'])
+@app.route('/media', methods=['GET', 'POST'])
 def media_webhook():
     """Handle Media Stream events from Twilio"""
+    logger.info(f"📡 Media webhook called with method: {request.method}")
     logger.info(f"📡 Media webhook called with headers: {dict(request.headers)}")
     logger.info(f"📡 Media webhook called with form data: {request.form.to_dict()}")
+    
+    # Handle GET requests for testing
+    if request.method == 'GET':
+        logger.info("📡 GET request to /media - Media Stream endpoint is reachable")
+        return {'status': 'Media Stream endpoint is working'}, 200
     
     # Try to get JSON data
     data = None
