@@ -1,0 +1,6 @@
+requests
+twilio
+flask
+websockets
+python-dotenv
+openai

@@ -1,16 +1,11 @@
 services:
   - type: web
-    name: voice-ai-server
-    env: node
-    plan: starter
-    buildCommand: npm install
-    startCommand: npm start
-    healthCheckPath: /health
+    name: twilio-deepgram-voice-agent
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 10000
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
@@ -21,3 +16,5 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: PORT
+        value: 10000
