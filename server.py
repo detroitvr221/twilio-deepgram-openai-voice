@@ -277,12 +277,17 @@ def voice_webhook():
         # Use Connect for bidirectional streaming
         connect = response.connect()
         
-        # Get the host from request headers
+        # Get the host and ensure HTTPS for production
         host = request.headers.get('Host', 'localhost:5000')
         
-        # Add debugging for Media Stream URL
-        media_url = f'https://{host}/media'
+        # Check if we're in production (Render) and force HTTPS
+        if 'onrender.com' in host or 'localhost' not in host:
+            media_url = f'https://{host}/media'
+        else:
+            media_url = f'http://{host}/media'
+            
         logger.info(f"📡 Media Stream URL: {media_url}")
+        logger.info(f"📡 Request headers: {dict(request.headers)}")
         
         connect.stream(
             url=media_url,
