@@ -66,14 +66,14 @@ app.post('/voice', (req, res) => {
     statusCallback: '/stream-status',
   });
   
-  // Initial greeting
+  // Initial greeting with better instructions
   response.say({
     voice: 'alice',
     language: 'en-US'
-  }, 'Hello! I\'m your AI assistant. How can I help you today?');
+  }, 'Hello! I\'m your AI assistant. I can help you send text messages, look up business hours, or create reminders. Just speak clearly and I\'ll respond. What would you like me to do?');
   
   // Keep the call alive to receive audio
-  response.pause({ length: 30 });
+  response.pause({ length: 60 });
   
   res.type('text/xml').send(response.toString());
 });
@@ -98,7 +98,7 @@ function setupPipeline(twilioWs) {
   let callSid = null;
   let streamSid = null;
   
-  // Initialize Deepgram connection
+  // Initialize Deepgram connection with speaker detection and chunked processing
   const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
   const dgConnection = deepgram.listen.live({
     encoding: 'mulaw',
@@ -110,6 +110,14 @@ function setupPipeline(twilioWs) {
     smart_format: true,
     filler_words: false,
     punctuate: true,
+    // Add speaker detection and chunked processing
+    diarize: true,
+    utterances: true,
+    endpointing: 1000,
+    vad_events: true,
+    interim_results: true,
+    utterance_end_ms: 1000,
+    chunk_length: 0.5, // Process in 0.5 second chunks
   });
 
   // Store connection for cleanup
@@ -159,7 +167,7 @@ function setupPipeline(twilioWs) {
     }
   });
 
-  // Handle Deepgram transcription results
+  // Handle Deepgram transcription results with speaker detection
   dgConnection.on('Results', async (data) => {
     try {
       const result = data.channel?.alternatives?.[0];
@@ -168,9 +176,13 @@ function setupPipeline(twilioWs) {
       const transcript = result.transcript?.trim();
       if (!transcript) return;
 
-      // Only process final results to avoid spam
+      // Get speaker information if available
+      const speaker = result.words?.[0]?.speaker || 'unknown';
+      const speakerLabel = speaker === 0 ? 'Caller' : 'AI';
+
+      // Process both interim and final results for better responsiveness
       if (data.is_final && transcript.length > 0) {
-        console.log('📝 Final transcript:', transcript);
+        console.log(`📝 Final transcript (${speakerLabel}):`, transcript);
         
         // Process with OpenAI
         const aiResponse = await processWithOpenAI(transcript);
@@ -184,9 +196,23 @@ function setupPipeline(twilioWs) {
         if (aiResponse.content) {
           await sendTwiMLResponse(aiResponse.content, callSid);
         }
-      } else if (!data.is_final && transcript.length > 5) {
-        // Log interim results for debugging
-        console.log('🔄 Interim:', transcript);
+      } else if (!data.is_final && transcript.length > 3) {
+        // Process interim results for faster response
+        console.log(`🔄 Interim (${speakerLabel}):`, transcript);
+        
+        // For longer interim transcripts, process them too
+        if (transcript.length > 10 && transcript.includes('send') || transcript.includes('text') || transcript.includes('message')) {
+          console.log('🚀 Processing interim command:', transcript);
+          const aiResponse = await processWithOpenAI(transcript);
+          
+          if (aiResponse.tool_calls?.length > 0) {
+            await handleFunctionCalls(aiResponse.tool_calls, callSid);
+          }
+          
+          if (aiResponse.content) {
+            await sendTwiMLResponse(aiResponse.content, callSid);
+          }
+        }
       }
     } catch (error) {
       console.error('❌ Error processing Deepgram result:', error);
