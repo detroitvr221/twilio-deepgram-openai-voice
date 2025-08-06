@@ -10,6 +10,10 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Middleware to parse request bodies
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+
 const port = process.env.PORT || 8080;
 
 // Initialize clients
@@ -49,16 +53,32 @@ app.post('/voice', (req, res) => {
   
   const response = new twilio.twiml.VoiceResponse();
   
-  // Start media stream to our WebSocket endpoint
-  response.start().stream({
+  // Use Connect for bidirectional streaming (recommended for Voice Agent)
+  const connect = response.connect();
+  connect.stream({
     url: `wss://${req.headers.host}/twilio`,
-    track: 'inbound_and_outbound_audio',
+    track: 'inbound_track', // Only inbound for Connect streams
+    name: 'voice_agent_stream',
+    statusCallback: `https://${req.headers.host}/stream-status`,
+    statusCallbackMethod: 'POST'
   });
-
-  // Keep the call alive
-  response.pause({ length: 60 });
+  
+  // This TwiML instruction is unreachable unless the Stream is ended by your WebSocket server
+  response.say('Connection ended.');
   
   res.type('text/xml').send(response.toString());
+});
+
+// Stream status callback endpoint
+app.post('/stream-status', (req, res) => {
+  console.log('🔄 Stream status:', {
+    event: req.body.StreamEvent,
+    streamSid: req.body.StreamSid,
+    streamName: req.body.StreamName,
+    error: req.body.StreamError,
+    timestamp: req.body.Timestamp
+  });
+  res.sendStatus(200);
 });
 
 // WebSocket handling for Twilio Media Streams
