@@ -59,11 +59,22 @@ def health_check():
         'active_connections': len(active_connections)
     }
 
-@app.route('/voice', methods=['POST'])
+@app.route('/voice', methods=['GET', 'POST'])
 def voice_webhook():
     """Twilio voice webhook - returns TwiML to start Media Stream"""
+    logger.info(f"📞 Voice webhook called with method: {request.method}")
+    logger.info(f"📞 Voice webhook headers: {dict(request.headers)}")
+    
+    if request.method == 'GET':
+        logger.info("📞 GET request to /voice - returning basic TwiML")
+        response = VoiceResponse()
+        response.say("Hello! This is a test response.")
+        return Response(str(response), mimetype='text/xml')
+    
+    # Handle POST request (actual call)
     caller = request.form.get('From', 'Unknown')
     logger.info(f"📞 Incoming call from: {caller}")
+    logger.info(f"📞 Call form data: {request.form.to_dict()}")
     
     response = VoiceResponse()
     
