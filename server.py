@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Twilio + Deepgram Voice Agent Integration
-Following the proven WebSocket-based approach
+Following the proven blueprint with function calling
 """
 
 import asyncio
@@ -36,6 +36,67 @@ logger = logging.getLogger(__name__)
 
 # Flask app for Twilio webhooks
 app = Flask(__name__)
+
+# Function calling support
+def get_drug_info(drug_name):
+    """Get information about a drug"""
+    # Mock database lookup
+    drug_info = {
+        "aspirin": {"name": "Aspirin", "dosage": "325mg", "side_effects": "Stomach upset"},
+        "ibuprofen": {"name": "Ibuprofen", "dosage": "200mg", "side_effects": "Dizziness"},
+        "acetaminophen": {"name": "Acetaminophen", "dosage": "500mg", "side_effects": "Liver issues"}
+    }
+    return drug_info.get(drug_name.lower(), {"name": drug_name, "dosage": "Unknown", "side_effects": "Consult doctor"})
+
+def place_order(customer_name, drug_name, quantity=1):
+    """Place a pharmacy order"""
+    order_id = f"ORD-{int(time.time())}"
+    return {
+        "order_id": order_id,
+        "customer_name": customer_name,
+        "drug_name": drug_name,
+        "quantity": quantity,
+        "status": "pending"
+    }
+
+def lookup_order(order_id):
+    """Look up order status"""
+    # Mock order database
+    orders = {
+        "ORD-123456": {"status": "shipped", "tracking": "UPS123456"},
+        "ORD-789012": {"status": "processing", "tracking": None}
+    }
+    return orders.get(order_id, {"status": "not_found"})
+
+# Function mapping
+FUNCTION_MAP = {
+    "get_drug_info": get_drug_info,
+    "place_order": place_order,
+    "lookup_order": lookup_order,
+}
+
+def execute_function_call(function_name, arguments):
+    """Execute a function call and return the result"""
+    try:
+        if function_name in FUNCTION_MAP:
+            func = FUNCTION_MAP[function_name]
+            result = func(**arguments)
+            logger.info(f"✅ Executed function {function_name}: {result}")
+            return result
+        else:
+            logger.error(f"❌ Unknown function: {function_name}")
+            return {"error": f"Unknown function: {function_name}"}
+    except Exception as e:
+        logger.error(f"❌ Function execution error: {e}")
+        return {"error": str(e)}
+
+def create_function_call_response(function_name, result):
+    """Create a function call response for Deepgram"""
+    return {
+        "type": "function_call_response",
+        "function_name": function_name,
+        "result": result
+    }
 
 # Optimized connection storage with automatic cleanup
 class ConnectionManager:
@@ -120,7 +181,7 @@ rate_limiter = RateLimiter()
 # Cached configurations
 @lru_cache(maxsize=1)
 def get_deepgram_config():
-    """Get cached Deepgram configuration"""
+    """Get cached Deepgram configuration with function calling"""
     return {
         "type": "Settings",
         "audio": {
@@ -148,20 +209,20 @@ def get_deepgram_config():
                     "model": "gpt-4o-mini",
                     "temperature": 0.7,
                 },
-                "prompt": """You are a helpful AI assistant integrated into a phone system.
+                "prompt": """You are a helpful pharmacy assistant integrated into a phone system.
 
 Guidelines:
 - Be concise and conversational since this is a voice interaction
-- When users ask you to text something, offer to send an SMS
-- When asked about business hours, provide helpful information
-- When users want to set reminders, acknowledge the request
+- Help customers with drug information, order placement, and order tracking
+- Use the available functions to provide accurate information
 - Keep responses brief and natural for voice conversation
 - Be friendly and professional
 
 You can help with:
-- General questions and conversation
-- Information lookup
-- Simple assistance and guidance
+- Drug information and side effects
+- Placing pharmacy orders
+- Tracking existing orders
+- General pharmacy questions
 
 Current user is calling via phone."""
             },
@@ -172,7 +233,60 @@ Current user is calling via phone."""
                     "voice": "nova",
                 },
             },
-            "greeting": "Hello! I'm your AI assistant. How can I help you today?"
+            "greeting": "Hello! I'm your pharmacy assistant. How can I help you today?",
+            "functions": [
+                {
+                    "name": "get_drug_info",
+                    "description": "Get information about a specific drug",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "drug_name": {
+                                "type": "string",
+                                "description": "The name of the drug to look up"
+                            }
+                        },
+                        "required": ["drug_name"]
+                    }
+                },
+                {
+                    "name": "place_order",
+                    "description": "Place a pharmacy order",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "customer_name": {
+                                "type": "string",
+                                "description": "The customer's name"
+                            },
+                            "drug_name": {
+                                "type": "string",
+                                "description": "The name of the drug to order"
+                            },
+                            "quantity": {
+                                "type": "integer",
+                                "description": "Quantity to order",
+                                "default": 1
+                            }
+                        },
+                        "required": ["customer_name", "drug_name"]
+                    }
+                },
+                {
+                    "name": "lookup_order",
+                    "description": "Look up the status of an existing order",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "order_id": {
+                                "type": "string",
+                                "description": "The order ID to look up"
+                            }
+                        },
+                        "required": ["order_id"]
+                    }
+                }
+            ]
         },
     }
 
@@ -224,7 +338,8 @@ def health_check():
             'environment': env_status,
             'rate_limiting': {
                 'active_requests': len(rate_limiter.requests)
-            }
+            },
+            'functions': list(FUNCTION_MAP.keys())
         }
     except Exception as e:
         logger.error(f"❌ Health check error: {e}")
@@ -246,6 +361,10 @@ def metrics():
         'memory': {
             'gc_stats': gc.get_stats(),
             'memory_usage': 'Available via system monitoring'
+        },
+        'functions': {
+            'available': list(FUNCTION_MAP.keys()),
+            'total': len(FUNCTION_MAP)
         }
     }
 
@@ -399,7 +518,7 @@ async def handle_twilio_messages(twilio_ws, deepgram_ws, connection_id):
         logger.error(f"❌ Error handling Twilio messages: {e}")
 
 async def handle_deepgram_messages(deepgram_ws, twilio_ws, connection_id):
-    """Handle messages from Deepgram Voice Agent"""
+    """Handle messages from Deepgram Voice Agent with function calling"""
     try:
         async for message in deepgram_ws:
             if isinstance(message, str):
@@ -407,8 +526,23 @@ async def handle_deepgram_messages(deepgram_ws, twilio_ws, connection_id):
                 data = json.loads(message)
                 logger.info(f"🤖 Deepgram message: {data.get('type', 'unknown')}")
                 
+                # Handle function call requests
+                if data.get('type') == 'function_call_request':
+                    function_name = data.get('function_name')
+                    arguments = data.get('arguments', {})
+                    
+                    logger.info(f"🔧 Function call: {function_name} with args: {arguments}")
+                    
+                    # Execute the function
+                    result = execute_function_call(function_name, arguments)
+                    
+                    # Send function result back to Deepgram
+                    response = create_function_call_response(function_name, result)
+                    await deepgram_ws.send(json.dumps(response))
+                    logger.info(f"✅ Function result sent: {result}")
+                
                 # Handle user started speaking (barge-in)
-                if data.get('type') == 'UserStartedSpeaking':
+                elif data.get('type') == 'UserStartedSpeaking':
                     conn = connection_manager.get_connection(connection_id)
                     if conn and conn['stream_sid']:
                         clear_message = {
@@ -514,5 +648,6 @@ if __name__ == '__main__':
     logger.info(f"📞 Twilio webhook URL: https://twilio-deepgram-openai-voice.onrender.com/voice")
     logger.info(f"🔌 WebSocket URL: wss://twilio-deepgram-openai-voice.onrender.com/twilio")
     logger.info(f"📊 Metrics URL: https://twilio-deepgram-openai-voice.onrender.com/metrics")
+    logger.info(f"🔧 Available functions: {list(FUNCTION_MAP.keys())}")
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
