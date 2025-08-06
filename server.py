@@ -87,9 +87,24 @@ def voice_webhook():
 @app.route('/media', methods=['POST'])
 def media_webhook():
     """Handle Media Stream events from Twilio"""
-    data = request.get_json()
+    logger.info(f"📡 Media webhook called with headers: {dict(request.headers)}")
+    logger.info(f"📡 Media webhook called with form data: {request.form.to_dict()}")
+    
+    # Try to get JSON data
+    data = None
+    try:
+        data = request.get_json()
+        logger.info(f"📡 Media webhook JSON data: {data}")
+    except Exception as e:
+        logger.info(f"📡 No JSON data in request: {e}")
+    
+    # Also check form data for Media Stream events
+    if not data and request.form:
+        data = request.form.to_dict()
+        logger.info(f"📡 Using form data as Media Stream data: {data}")
     
     if not data:
+        logger.info("📡 No data received in Media Stream webhook")
         return '', 200
     
     event = data.get('event')
@@ -105,6 +120,8 @@ def media_webhook():
         if stream_sid in active_connections:
             del active_connections[stream_sid]
             logger.info(f"🧹 Cleaned up stream {stream_sid}")
+    else:
+        logger.info(f"📡 Unknown Media Stream event: {event}")
     
     return '', 200
 
@@ -294,5 +311,6 @@ if __name__ == '__main__':
     logger.info(f"🚀 Flask server starting on port {port}")
     logger.info(f"📞 Twilio webhook URL: https://twilio-deepgram-openai-voice.onrender.com/voice")
     logger.info(f"📡 Media stream URL: https://twilio-deepgram-openai-voice.onrender.com/media")
+    logger.info(f"🔍 Test Media Stream: https://twilio-deepgram-openai-voice.onrender.com/media (POST with any data)")
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
