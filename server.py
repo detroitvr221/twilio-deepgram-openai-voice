@@ -367,93 +367,55 @@ def media_webhook():
     return '', 200
 
 async def start_deepgram_connection(stream_sid):
-    """Start Deepgram connection for a new stream"""
-    try:
-        async with create_deepgram_connection() as deepgram_ws:
-            logger.info(f"🎙️ Connected to Deepgram Voice Agent for stream {stream_sid}")
-            
-            # Store connection
-            connection_manager.add_connection(stream_sid, {
-                'deepgram_ws': deepgram_ws,
-                'stream_sid': stream_sid,
-                'audio_buffer': bytearray()
-            })
-            
-            # Send Voice Agent configuration
-            config_message = {
-                "type": "Settings",
-                "audio": {
-                    "input": {
-                        "encoding": "mulaw",
-                        "sample_rate": 8000,
-                    },
-                    "output": {
-                        "encoding": "mulaw", 
-                        "sample_rate": 8000,
-                        "container": "none",
-                    },
-                },
-                "agent": {
-                    "language": "en",
-                    "listen": {
-                        "provider": {
-                            "type": "deepgram",
-                            "model": "aura-2-odysseus-en",
-                        }
-                    },
-                    "think": {
-                        "provider": {
-                            "type": "open_ai",
-                            "model": "gpt-4o-mini",
-                            "temperature": 0.7,
-                        },
-                        "prompt": """You are a helpful AI assistant integrated into a phone system.
-
-Guidelines:
-- Be concise and conversational since this is a voice interaction
-- When users ask you to text something, offer to send an SMS
-- When asked about business hours, provide helpful information
-- When users want to set reminders, acknowledge the request
-- Keep responses brief and natural for voice conversation
-- Be friendly and professional
-
-You can help with:
-- General questions and conversation
-- Information lookup
-- Simple assistance and guidance
-
-Current user is calling via phone."""
-                    },
-                    "speak": {
-                        "provider": {
-                            "type": "deepgram",
-                            "model": "aura-2-odysseus-en",
-                            "voice": "nova",
-                        },
-                    },
-                    "greeting": "Hello! I'm your AI assistant. How can I help you today?"
-                },
-            }
-            
-            await deepgram_ws.send(json.dumps(config_message))
-            logger.info("📋 Configuration sent to Deepgram Voice Agent")
-            
-            # Start tasks for handling messages
-            tasks = [
-                asyncio.create_task(handle_deepgram_messages(deepgram_ws, stream_sid)),
-                asyncio.create_task(send_keep_alive(deepgram_ws))
-            ]
-            
-            # Wait for any task to complete
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            
-            # Cancel remaining tasks
-            for task in pending:
-                task.cancel()
+    """Start Deepgram connection for a new stream with retry logic"""
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            async with create_deepgram_connection() as deepgram_ws:
+                logger.info(f"🎙️ Connected to Deepgram Voice Agent for stream {stream_sid}")
                 
-    except Exception as e:
-        logger.error(f"❌ Error in Deepgram connection: {e}")
-    finally:
+                # Store connection
+                connection_manager.add_connection(stream_sid, {
+                    'deepgram_ws': deepgram_ws,
+                    'stream_sid': stream_sid,
+                    'audio_buffer': bytearray(),
+                    'connected_at': time.time()
+                })
+                
+                # Send Voice Agent configuration
+                config_message = get_deepgram_config()
+                await deepgram_ws.send(json.dumps(config_message))
+                logger.info("📋 Configuration sent to Deepgram Voice Agent")
+                
+                # Start tasks for handling messages
+                tasks = [
+                    asyncio.create_task(handle_deepgram_messages(deepgram_ws, stream_sid)),
+                    asyncio.create_task(send_keep_alive(deepgram_ws))
+                ]
+                
+                # Wait for any task to complete
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                
+                # Cancel remaining tasks
+                for task in pending:
+                    task.cancel()
+                    
+                # If we get here, connection was successful
+                break
+                
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"❌ Error in Deepgram connection (attempt {retry_count}/{max_retries}): {e}")
+            
+            if retry_count < max_retries:
+                wait_time = 2 ** retry_count  # Exponential backoff
+                logger.info(f"🔄 Retrying in {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"❌ Failed to connect to Deepgram after {max_retries} attempts")
+                
         # Cleanup
         connection_manager.remove_connection(stream_sid)
         logger.info(f"🧹 Cleaned up stream {stream_sid}")
@@ -486,22 +448,28 @@ def send_audio_to_twilio(stream_sid, audio_data):
         # Encode audio data
         encoded_audio = base64.b64encode(audio_data).decode('ascii')
         
-        # Prepare media message
+        # Prepare media message for Twilio
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
             "media": {
-                "payload": encoded_audio
+                "payload": encoded_audio,
+                "track": "outbound_track",
+                "chunk": 1,
+                "timestamp": int(time.time() * 1000)
             }
         }
         
-        # Send to Twilio Media Streams API
-        # Note: This would require Twilio's Media Streams API
-        # For now, we'll log the audio data
-        logger.info(f"🎵 Audio data ready for Twilio (stream: {stream_sid})")
+        # Store for Twilio to pick up (in a real implementation, you'd send this via WebSocket)
+        logger.info(f"🎵 Audio data ready for Twilio (stream: {stream_sid}, size: {len(audio_data)} bytes)")
+        
+        # In a production setup, you'd send this via Twilio's Media Streams WebSocket
+        # For now, we log it for debugging
+        return media_message
         
     except Exception as e:
         logger.error(f"❌ Error sending audio to Twilio: {e}")
+        return None
 
 def send_audio_to_deepgram(stream_sid, audio_bytes):
     """Send audio data to Deepgram"""
