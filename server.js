@@ -3,12 +3,12 @@ import express from 'express';
 import { createClient } from '@deepgram/sdk';
 import OpenAI from 'openai';
 import twilio from 'twilio';
-import WebSocket from 'ws';
+import { WebSocketServer } from 'ws';
 import http from 'http';
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 
 // Middleware to parse request bodies
 app.use(express.urlencoded({ extended: false }));
