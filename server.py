@@ -334,7 +334,7 @@ if __name__ == '__main__':
     
     # Start Flask app for HTTP endpoints
     logger.info(f"🚀 Flask server starting on port {port}")
-    logger.info(f"📞 Twilio webhook URL: http://localhost:{port}/voice")
-    logger.info(f"🔌 WebSocket URL: ws://localhost:{port}/twilio")
+    logger.info(f"📞 Twilio webhook URL: https://your-render-url.onrender.com/voice")
+    logger.info(f"🔌 WebSocket URL: wss://your-render-url.onrender.com/twilio")
     
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
