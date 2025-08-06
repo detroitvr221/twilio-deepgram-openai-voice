@@ -54,7 +54,7 @@ app.get('/health', (req, res) => {
 });
 
 // Twilio voice webhook - returns TwiML to start Media Stream
-app.post('/voice', (req, res) => {
+app.post('/voice', async (req, res) => {
   console.log('📞 Incoming call from:', req.body.From);
   
   const response = new twilio.twiml.VoiceResponse();
@@ -65,12 +65,29 @@ app.post('/voice', (req, res) => {
     track: 'inbound_and_outbound_audio',
     statusCallback: '/stream-status',
   });
-  
-  // Initial greeting with better instructions
-  response.say({
-    voice: 'alice',
-    language: 'en-US'
-  }, 'Hello! I\'m your AI assistant. I can help you send text messages, look up business hours, or create reminders. Just speak clearly and I\'ll respond. What would you like me to do?');
+
+  // Initial greeting with Deepgram TTS
+  try {
+    const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+    const audioResponse = await deepgram.speak({
+      text: 'Hello! I\'m your AI assistant. I can help you send text messages, look up business hours, or create reminders. Just speak clearly and I\'ll respond. What would you like me to do?',
+      model: 'aura-2-odysseus-en',
+      voice: 'nova',
+      encoding: 'mulaw',
+      sample_rate: 8000,
+    });
+
+    const audioBuffer = Buffer.from(audioResponse.audio);
+    const base64Audio = audioBuffer.toString('base64');
+    
+    response.play(`data:audio/wav;base64,${base64Audio}`);
+  } catch (error) {
+    console.error('❌ Deepgram TTS failed for greeting, using fallback:', error);
+    response.say({
+      voice: 'alice',
+      language: 'en-US'
+    }, 'Hello! I\'m your AI assistant. I can help you send text messages, look up business hours, or create reminders. Just speak clearly and I\'ll respond. What would you like me to do?');
+  }
   
   // Keep the call alive to receive audio
   response.pause({ length: 60 });
@@ -430,7 +447,7 @@ async function createReminder(reminderText, when) {
   return true;
 }
 
-// Send TwiML response to update the call
+// Send TwiML response using Deepgram TTS
 async function sendTwiMLResponse(message, callSid) {
   if (!callSid) {
     console.log('⚠️  No callSid available for TwiML response');
@@ -438,11 +455,23 @@ async function sendTwiMLResponse(message, callSid) {
   }
 
   try {
+    // Use Deepgram TTS to generate speech
+    const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+    const audioResponse = await deepgram.speak({
+      text: message,
+      model: 'aura-2-odysseus-en',
+      voice: 'nova',
+      encoding: 'mulaw',
+      sample_rate: 8000,
+    });
+
+    // Convert audio to base64 for Twilio
+    const audioBuffer = Buffer.from(audioResponse.audio);
+    const base64Audio = audioBuffer.toString('base64');
+
+    // Create TwiML with Deepgram audio
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.say({
-      voice: 'alice',
-      language: 'en-US'
-    }, message);
+    twiml.play(`data:audio/wav;base64,${base64Audio}`);
     
     // Keep the call active to continue listening
     twiml.pause({ length: 5 });
@@ -451,9 +480,28 @@ async function sendTwiMLResponse(message, callSid) {
       twiml: twiml.toString(),
     });
 
-    console.log('🗣️  TwiML response sent:', message);
+    console.log('🗣️  Deepgram TTS response sent:', message);
   } catch (error) {
-    console.error('❌ Failed to send TwiML response:', error);
+    console.error('❌ Failed to send Deepgram TTS response:', error);
+    
+    // Fallback to Twilio voice if Deepgram fails
+    try {
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say({
+        voice: 'alice',
+        language: 'en-US'
+      }, message);
+      
+      twiml.pause({ length: 5 });
+
+      await twilioClient.calls(callSid).update({
+        twiml: twiml.toString(),
+      });
+
+      console.log('🗣️  Fallback Twilio response sent:', message);
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+    }
   }
 }
 
