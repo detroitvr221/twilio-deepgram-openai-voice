@@ -4,3 +4,4 @@ flask
 websockets
 python-dotenv
 openai
+deepgram-sdk
