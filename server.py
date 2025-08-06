@@ -124,8 +124,22 @@ def media_webhook():
     logger.info(f"🔄 Media event: {event} for stream {stream_sid}")
     
     if event == 'start':
-        # Start new connection to Deepgram
-        asyncio.run(start_deepgram_connection(stream_sid))
+        logger.info(f"🚀 Starting Deepgram connection for stream {stream_sid}")
+        # Start new connection to Deepgram in background
+        threading.Thread(target=lambda: asyncio.run(start_deepgram_connection(stream_sid)), daemon=True).start()
+    elif event == 'media':
+        # Handle incoming audio data
+        media_data = data.get('media', {})
+        if media_data.get('track') == 'inbound':
+            # Send audio to Deepgram
+            audio_payload = media_data.get('payload')
+            if audio_payload:
+                try:
+                    audio_bytes = base64.b64decode(audio_payload)
+                    send_audio_to_deepgram(stream_sid, audio_bytes)
+                    logger.debug(f"🎵 Received audio chunk for stream {stream_sid}")
+                except Exception as e:
+                    logger.error(f"❌ Error processing audio: {e}")
     elif event == 'stop':
         # Clean up connection
         if stream_sid in active_connections:
@@ -145,7 +159,8 @@ async def start_deepgram_connection(stream_sid):
             # Store connection
             active_connections[stream_sid] = {
                 'deepgram_ws': deepgram_ws,
-                'stream_sid': stream_sid
+                'stream_sid': stream_sid,
+                'audio_buffer': bytearray()
             }
             
             # Send Voice Agent configuration
@@ -272,6 +287,29 @@ def send_audio_to_twilio(stream_sid, audio_data):
         
     except Exception as e:
         logger.error(f"❌ Error sending audio to Twilio: {e}")
+
+def send_audio_to_deepgram(stream_sid, audio_bytes):
+    """Send audio data to Deepgram"""
+    try:
+        if stream_sid in active_connections:
+            conn = active_connections[stream_sid]
+            if 'deepgram_ws' in conn:
+                # Add to buffer
+                conn['audio_buffer'].extend(audio_bytes)
+                
+                # Send when buffer is ready (20ms chunks)
+                BUFFER_SIZE = 160  # 20ms at 8kHz
+                while len(conn['audio_buffer']) >= BUFFER_SIZE:
+                    chunk = conn['audio_buffer'][:BUFFER_SIZE]
+                    asyncio.run_coroutine_threadsafe(
+                        conn['deepgram_ws'].send(chunk),
+                        asyncio.get_event_loop()
+                    )
+                    conn['audio_buffer'] = conn['audio_buffer'][BUFFER_SIZE:]
+                    
+                logger.debug(f"🎵 Sent audio chunk to Deepgram (stream: {stream_sid})")
+    except Exception as e:
+        logger.error(f"❌ Error sending audio to Deepgram: {e}")
 
 def send_clear_to_twilio(stream_sid):
     """Send clear message to Twilio"""
